@@ -332,6 +332,7 @@ enum tpm2_command_codes {
 	TPM2_CC_CLEARCONTROL	= 0x0127,
 	TPM2_CC_HIERCHANGEAUTH	= 0x0129,
 	TPM2_CC_NV_DEFINE_SPACE	= 0x012a,
+	TPM2_CC_NV_UNDEFINE_SPACE = 0x0122,
 	TPM2_CC_PCR_SETAUTHPOL	= 0x012C,
 	TPM2_CC_NV_WRITE	= 0x0137,
 	TPM2_CC_NV_WRITELOCK	= 0x0138,
@@ -716,6 +717,20 @@ u32 tpm2_clear(struct udevice *dev, u32 handle, const char *pw,
 u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
 			 size_t space_size, u32 nv_attributes,
 			 const u8 *nv_policy, size_t nv_policy_size);
+
+
+
+
+/**
+ * Issue a TPM_NV_UnDefineSpace command
+ *
+ * This allows a space to be removed. Needed because TPM_clear doesn't clear platform entries
+ *
+ * @dev			TPM device
+ * @space_index		index of the area
+ * Return: return code of the operation
+ */
+u32 tpm2_nv_undefine_space(struct udevice *dev, u32 space_index);
 
 /**
  * Issue a TPM2_PCR_Extend command.

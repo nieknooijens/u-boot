@@ -787,15 +787,15 @@ u32 tpm2_clear(struct udevice *dev, u32 handle, const char *pw,
 }
 
 u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
-			 size_t space_size, u32 nv_attributes,
-			 const u8 *nv_policy, size_t nv_policy_size)
+			size_t space_size, u32 nv_attributes,
+			const u8 *nv_policy, size_t nv_policy_size)
 {
 	/*
 	 * Calculate the offset of the nv_policy piece by adding each of the
 	 * chunks below.
 	 */
 	const int platform_len = sizeof(u32);
-	const int session_hdr_len = 13;
+	const int session_hdr_len = 15;
 	const int message_len = 14;
 	uint offset = TPM2_HDR_LEN + platform_len + session_hdr_len +
 		message_len;
@@ -808,11 +808,15 @@ u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
 		/* handles 4 bytes */
 		tpm_u32(TPM2_RH_PLATFORM),	/* Primary platform seed */
 
-		/* session header 13 bytes */
+
+		/* session header 15 bytes */
+		/*null auth session*/
 		tpm_u32(9),			/* Header size */
 		tpm_u32(TPM2_RS_PW),		/* Password authorisation */
 		tpm_u16(0),			/* nonce_size */
 		0,				/* session_attrs */
+		tpm_u16(0),			/* HMAC size */
+		/*end auth area*/
 		tpm_u16(0),			/* auth_size */
 
 		/* message 14 bytes + policy */
@@ -838,6 +842,35 @@ u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
 	if (ret)
 		return TPM_LIB_ERROR;
 
+	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
+}
+
+u32 tpm2_nv_undefine_space(struct udevice *dev, u32 space_index)
+{
+	const int platform_len = sizeof(u32);
+	const int session_hdr_len = 13;
+	const int message_len = 4;
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+		/* header 10 bytes */
+		tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
+		tpm_u32(TPM2_HDR_LEN + platform_len + session_hdr_len +
+				message_len),/* Length - header + provision + index + auth area*/
+		tpm_u32(TPM2_CC_NV_UNDEFINE_SPACE),/* Command code */
+
+		/* handles 4 bytes */
+		tpm_u32(TPM2_RH_PLATFORM),	/* Primary platform seed */
+		/* nv_index */
+		tpm_u32(space_index),
+
+		/*null auth session*/
+		tpm_u32(9),			/* Header size */
+		tpm_u32(TPM2_RS_PW),		/* Password authorisation FIXME: allow PCR authorization */
+		tpm_u16(0),			/* nonce_size */
+		0,				/* session_attrs */
+		tpm_u16(0),			/* HMAC size */
+		/*end auth area*/
+
+	};
 	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
 }
 
@@ -889,22 +922,23 @@ u32 tpm2_nv_read_value(struct udevice *dev, u32 index, void *data, u32 count)
 	u8 command_v2[COMMAND_BUFFER_SIZE] = {
 		/* header 10 bytes */
 		tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
-		tpm_u32(10 + 8 + 4 + 9 + 4),	/* Length */
+		tpm_u32(TPM2_HDR_LEN + 8 + 4 + 9 + 4),	/* Length */
 		tpm_u32(TPM2_CC_NV_READ),	/* Command code */
 
 		/* handles 8 bytes */
 		tpm_u32(TPM2_RH_PLATFORM),	/* Primary platform seed */
-		tpm_u32(HR_NV_INDEX + index),	/* Password authorisation */
+		tpm_u32(index),			/*nv index*/
 
 		/* AUTH_SESSION */
-		tpm_u32(9),			/* Authorization size */
-		tpm_u32(TPM2_RS_PW),		/* Session handle */
+		tpm_u32(9),			/* Authorization size - 4 bytes*/
+		/*auth handle - 9 bytes */
+		tpm_u32(TPM2_RS_PW),		/* Password authorisation */
 		tpm_u16(0),			/* Size of <nonce> */
 						/* <nonce> (if any) */
 		0,				/* Attributes: Cont/Excl/Rst */
 		tpm_u16(0),			/* Size of <hmac/password> */
 						/* <hmac/password> (if any) */
-
+		/*end auth handle */
 		tpm_u16(count),			/* Number of bytes */
 		tpm_u16(0),			/* Offset */
 	};
@@ -929,7 +963,7 @@ u32 tpm2_nv_write_value(struct udevice *dev, u32 index, const void *data,
 			u32 count)
 {
 	struct tpm_chip_priv *priv = dev_get_uclass_priv(dev);
-	uint offset = 10 + 8 + 4 + 9 + 2;
+	uint offset = TPM2_HDR_LEN + 8 + 4 + 9 + 2;
 	uint len = offset + count + 2;
 	/* Use empty password auth if platform hierarchy is disabled */
 	u32 auth = priv->plat_hier_disabled ? HR_NV_INDEX + index :
@@ -942,18 +976,21 @@ u32 tpm2_nv_write_value(struct udevice *dev, u32 index, const void *data,
 
 		/* handles 8 bytes */
 		tpm_u32(auth),			/* Primary platform seed */
-		tpm_u32(HR_NV_INDEX + index),	/* Password authorisation */
+		tpm_u32(index),			/*nv index*/
 
 		/* AUTH_SESSION */
-		tpm_u32(9),			/* Authorization size */
-		tpm_u32(TPM2_RS_PW),		/* Session handle */
+		tpm_u32(9),			/* Authorization size - 4 bytes */
+		/*auth handle - 9 bytes */
+		tpm_u32(TPM2_RS_PW),	/* Password authorisation */	/* Session handle */
 		tpm_u16(0),			/* Size of <nonce> */
 						/* <nonce> (if any) */
 		0,				/* Attributes: Cont/Excl/Rst */
 		tpm_u16(0),			/* Size of <hmac/password> */
 						/* <hmac/password> (if any) */
-
-		tpm_u16(count),
+		/*end auth handle */
+		tpm_u16(count),/*size of buffer - 2 bytes*/
+		/*data (buffer)*/
+		/*offset -> the octet offset into the NV Area*/
 	};
 	size_t response_len = COMMAND_BUFFER_SIZE;
 	u8 response[COMMAND_BUFFER_SIZE];

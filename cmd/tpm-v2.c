@@ -356,6 +356,136 @@ static int do_tpm_pcr_setauthvalue(struct cmd_tbl *cmdtp, int flag,
 							key, key_sz));
 }
 
+static int do_tpm_nv_define(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	struct tpm_chip_priv *priv;
+	u32 nv_addr, nv_size, nv_attributes, rc;
+	void *policy_addr = NULL;
+	size_t policy_size = 0;
+	int ret;
+
+	nv_attributes = 0;
+
+	if ((argc < 3 && argc > 6) || argc == 4)
+		return CMD_RET_USAGE;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+
+	priv = dev_get_uclass_priv(dev);
+	if (!priv)
+		return -EINVAL;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0);
+
+	nv_size = simple_strtoul(argv[2], NULL, 0);
+
+	if (argc > 3)
+		nv_attributes = simple_strtoul(argv[3], NULL, 0);
+	else
+		nv_attributes = TPMA_NV_PLATFORMCREATE | TPMA_NV_OWNERWRITE | TPMA_NV_OWNERREAD | TPMA_NV_PPWRITE | TPMA_NV_PPREAD;
+
+	if (argc > 4) {
+		policy_addr = map_sysmem(simple_strtoul(argv[4], NULL, 0), 0);
+		if ((nv_attributes & (TPMA_NV_POLICYREAD | TPMA_NV_POLICYWRITE)) == 0) {
+			printf("ERROR: policy provided, but TPMA_NV_POLICYREAD or TPMA_NV_POLICYWRITE are NOT set!\n");
+			return CMD_RET_FAILURE;
+		}
+		policy_size = simple_strtoul(argv[5], NULL, 0);
+	}
+
+	rc = tpm2_nv_define_space(dev, nv_addr, nv_size, nv_attributes, policy_addr, policy_size);
+
+	if (rc)
+		printf("ERROR: nv_define #%u returns: 0x%x\n", nv_addr, rc);
+
+	if (policy_addr)
+		unmap_sysmem(policy_addr);
+
+	return report_return_code(rc);
+}
+
+static int do_tpm_nv_undefine(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 nv_addr, ret, rc;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+
+	if (argc != 2)
+		return CMD_RET_USAGE;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0);
+	rc = tpm2_nv_undefine_space(dev, nv_addr);
+
+	return report_return_code(rc);
+}
+
+static int do_tpm_nv_read_value(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 nv_addr, nv_size, rc;
+	int ret;
+	void *out_data;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+
+	if (argc != 4)
+		return CMD_RET_USAGE;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0);
+
+	nv_size = simple_strtoul(argv[2], NULL, 0);
+
+	out_data = map_sysmem(simple_strtoul(argv[3], NULL, 0), 0);
+
+	rc = tpm2_nv_read_value(dev, nv_addr, out_data, nv_size);
+
+	if (rc)
+		printf("ERROR: nv_read #%u returns: #%u\n", nv_addr, rc);
+
+	unmap_sysmem(out_data);
+	return report_return_code(rc);
+}
+
+static int do_tpm_nv_write_value(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 nv_addr, nv_size, rc;
+	int ret;
+
+	ret = get_tpm(&dev);
+		if (ret)
+			return ret;
+
+		if (argc != 4)
+			return CMD_RET_USAGE;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0); //tpm_addr
+
+	nv_size = simple_strtoul(argv[2], NULL, 0); //size
+
+	void *data_to_write = map_sysmem(simple_strtoul(argv[3], NULL, 0), 0);
+
+	rc = tpm2_nv_write_value(dev, nv_addr, data_to_write, nv_size);
+
+	if (rc)
+		printf("ERROR: nv_read #%u returns: #%u\n", nv_addr, rc);
+
+	unmap_sysmem(data_to_write);
+	return report_return_code(rc);
+}
+
 static struct cmd_tbl tpm2_commands[] = {
 	U_BOOT_CMD_MKENT(device, 0, 1, do_tpm_device, "", ""),
 	U_BOOT_CMD_MKENT(info, 0, 1, do_tpm_info, "", ""),
@@ -375,6 +505,10 @@ static struct cmd_tbl tpm2_commands[] = {
 			 do_tpm_pcr_setauthpolicy, "", ""),
 	U_BOOT_CMD_MKENT(pcr_setauthvalue, 0, 1,
 			 do_tpm_pcr_setauthvalue, "", ""),
+	U_BOOT_CMD_MKENT(nv_define, 0, 1, do_tpm_nv_define, "", ""),
+	U_BOOT_CMD_MKENT(nv_undefine, 0, 1, do_tpm_nv_undefine, "", ""),
+	U_BOOT_CMD_MKENT(nv_read, 0, 1, do_tpm_nv_read_value, "", ""),
+	U_BOOT_CMD_MKENT(nv_write, 0, 1, do_tpm_nv_write_value, "", ""),
 };
 
 struct cmd_tbl *get_tpm2_commands(unsigned int *size)
@@ -453,4 +587,22 @@ U_BOOT_CMD(tpm2, CONFIG_SYS_MAXARGS, 1, do_tpm, "Issue a TPMv2.x command",
 "    <pcr>: index of the PCR\n"
 "    <key>: secret to protect the access of PCR #<pcr>\n"
 "    <password>: optional password of the PLATFORM hierarchy\n"
+"\n"
+"nv_define <tpm_addr> <size> [<attributes>, <policy_digest_addr> <policy_size>]\n"
+"    Define new nv index in the TPM at <tpm_addr> with size <size>\n"
+"    <tpm_addr>: the internal address used within the TPM for the NV-index\n"
+"    <attributes>: is described in tpp-v2.h enum tpm_index_attrs. Note; Always use TPMA_NV_PLATFORMCREATE!\n"
+"                  will default to: TPMA_NV_PLATFORMCREATE|TPMA_NV_OWNERWRITE|TPMA_NV_OWNERREAD|TPMA_NV_PPWRITE|TPMA_NV_PPREAD\n"
+"nv_undefine <tpm_addr>\n"
+"	delete nv index\n"
+"nv_read <tpm_addr> <size> <data_addr>\n"
+"    Read data stored in TPM nv_memory at <tpm_addr> with size <size>\n"
+"    <tpm_addr>: the internal address used within the TPM for the NV-index\n"
+"    <size>: datasize in bytes\n"
+"    <data_addr>: memory address where to store the data read from the TPM\n"
+"nv_write <tpm_addr> <size> <data_addr> [<policy_digest_addr> <policy_size>]\n"
+"    Write data to the TPM's nv_memory at <tpm_addr> with size <size>\n"
+"    <tpm_addr>: the internal address used within the TPM for the NV-index\n"
+"    <size>: datasize in bytes\n"
+"    <data_addr>: memory address of the data to be written to the TPM's NV-index\n"
 );
