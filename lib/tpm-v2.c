@@ -786,19 +786,188 @@ u32 tpm2_clear(struct udevice *dev, u32 handle, const char *pw,
 	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
 }
 
+u32 tpm2_start_auth_session(struct udevice *dev, u32 *session_handle, u8 session_type)
+{
+	const u16 nonce_size	= TPM2_SHA256_DIGEST_SIZE;
+	const int handles_len = sizeof(u32) * 2;
+	uint offset = TPM2_HDR_LEN + handles_len + sizeof(nonce_size);
+	struct tpm_chip_priv *priv;
+	int ret;
+
+	priv = dev_get_uclass_priv(dev);
+		if (!priv)
+			return TPM_LIB_ERROR;
+
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+			/* header 10 bytes */
+			tpm_u16(TPM2_ST_NO_SESSIONS),	/* TAG */
+			tpm_u32(offset + nonce_size + 7),/* Length */
+			tpm_u32(TPM2_CC_START_AUTH_SESSION),/* Command code */
+
+			/* handles 8 bytes */
+			tpm_u32(TPM2_RH_NULL),	/* TPMI_DH_OBJECT+ */
+			tpm_u32(TPM2_RH_NULL),	/* TPMI_DH_ENTITY+ */
+
+			/* NONCE 32 bytes -> use pack_byte_string() */
+			tpm_u16(nonce_size),
+			/* message 7 bytes -> use pack_byte_string() */
+			//tpm_u16(0), // salt size
+			//session_type, // session type
+			//tpm_u16(TPM2_ALG_NULL), // symmetric key algorythm
+			//tpm_u16(TPM2_ALG_SHA256), // auth hash
+	};
+
+	u8 Nonce[nonce_size]; //nonce is a random number you use once. (Number ONCE)
+
+	memset(&Nonce, 2, nonce_size); //should use TPM_get_random() to randomize
+
+	ret = pack_byte_string(command_v2, sizeof(command_v2), "swbww",
+				offset, Nonce, nonce_size,
+				offset + nonce_size, 0, //salt size
+				offset + nonce_size + 2, session_type,
+				offset + nonce_size + 3, TPM2_ALG_NULL,
+				offset + nonce_size + 5, TPM2_ALG_SHA256);
+
+	if (ret)
+		return TPM_LIB_ERROR;
+
+	size_t response_len = COMMAND_BUFFER_SIZE;
+	u8 response[COMMAND_BUFFER_SIZE];
+	u16 tag;
+	u32 size, code;
+
+	ret = tpm_sendrecv_command(dev, command_v2, response, &response_len);
+
+	if (ret)
+		return log_msg_ret("read", ret);
+
+	if (unpack_byte_string(response, response_len, "wdddws",
+				0, &tag, 2, &size, 6, &code, //header
+				10, session_handle, //TPMI_SH_AUTH_SESSION
+				14, &priv->nonce_sz,
+				16, priv->nonce, TPM2_SHA256_DIGEST_SIZE)) //HACK: we asked for SHA256, so that's what we'll get.
+		return TPM_LIB_ERROR;
+	return ret;
+}
+
+u32 tpm2_flush_context(struct udevice *dev, u32 session_handle)
+{
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+			/* header 10 bytes */
+			tpm_u16(TPM2_ST_NO_SESSIONS),	/* TAG */
+			tpm_u32(TPM2_HDR_LEN + sizeof(u32)),/* Length */
+			tpm_u32(TPM2_CC_FLUSH_CONTEXT),/* Command code */
+
+			/* session handle 4 bytes */
+			tpm_u32(session_handle),	/* TPMI_DH_CONTEXT+ */
+	};
+	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
+}
+
+u32 tpm2_set_policy_pcr(struct udevice *dev, u32 session_handle, u32 index, void *out_digest)
+{
+	const int offset = TPM2_HDR_LEN + 6;
+	const int message_len = offset + TPM2_SHA256_DIGEST_SIZE + 10;
+	int ret;
+	u8 pcr_sel_bit = BIT(index % 8);
+	struct tpm_chip_priv *priv;
+	struct tpml_digest_values digest_list;
+
+	digest_list.count = 1;
+	digest_list.digests->hash_alg = TPM2_ALG_SHA256;
+	tcg2_pcr_read(dev, index, &digest_list);
+
+	u8 pcr_sha_output[TPM2_SHA256_DIGEST_SIZE];
+	sha256_context ctx_256;
+
+	sha256_starts(&ctx_256);
+	sha256_update(&ctx_256, digest_list.digests[0].digest.sha256, TPM2_SHA256_DIGEST_SIZE);
+	sha256_finish(&ctx_256, pcr_sha_output);
+
+	priv = dev_get_uclass_priv(dev);
+		if (!priv)
+			return TPM_LIB_ERROR;
+
+	u8 idx_array_sz = max(priv->pcr_select_min, DIV_ROUND_UP(index, 8));
+
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+			/* header 10 bytes */
+			tpm_u16(TPM2_ST_NO_SESSIONS),	/* TAG -> TPM2_ST_SESSIONS only for audit or decrypt*/
+			tpm_u32(message_len),/* Length */
+			tpm_u32(TPM2_CC_POLICY_PCR),/* Command code */
+			/* session handle 4 bytes */
+			tpm_u32(session_handle),	/* TPMI_SH_POLICY */
+			/* PCR Digest - 32 bytes */
+			tpm_u16(TPM2_SHA256_DIGEST_SIZE) /*hash size*/
+			/* digest - 32-bytes */
+			/* PCR selection */
+			//tpm_u32(1),			/* Number of selections */
+			//tpm_u16(TPM_ALG_SHA256),	/* Algorithm */
+			//idx_array_sz,			/* Array size for selection */
+			/* bitmap(idx)			   Selected PCR bitmap */
+	};
+
+	if (pack_byte_string(command_v2, COMMAND_BUFFER_SIZE, "sdwbbw",
+			offset, pcr_sha_output, TPM2_SHA256_DIGEST_SIZE,
+			offset + TPM2_SHA256_DIGEST_SIZE, 1, /* Number of selections */
+			offset + TPM2_SHA256_DIGEST_SIZE + 4, TPM2_ALG_SHA256, /* Algorithm */
+			offset + TPM2_SHA256_DIGEST_SIZE + 6, idx_array_sz, /* size of select */
+			offset + TPM2_SHA256_DIGEST_SIZE + 7, pcr_sel_bit,/* Selected PCR bitmap */
+			offset + TPM2_SHA256_DIGEST_SIZE + 8, 0))  /*padding */
+		return TPM_LIB_ERROR;
+
+	ret = tpm_sendrecv_command(dev, command_v2, NULL, NULL);
+	if (ret)
+		return ret;
+	return tpm2_get_policy_digest(dev, session_handle, out_digest);
+}
+
+u32 tpm2_get_policy_digest(struct udevice *dev, u32 session_handle, void *out_digest)
+{
+	const int message_len = TPM2_HDR_LEN + sizeof(u32);
+
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+		/* header 10 bytes */
+		tpm_u16(TPM2_ST_NO_SESSIONS),	/* TAG -> SESSIONS only for audit or decrypt */
+		tpm_u32(message_len),/* Length */
+		tpm_u32(TPM2_CC_POLICY_GET_DIGEST),/* Command code */
+		/* session handle 4 bytes */
+		tpm_u32(session_handle),	/* TPMI_SH_POLICY */
+	};
+
+	size_t response_len = COMMAND_BUFFER_SIZE;
+	u8 response[COMMAND_BUFFER_SIZE];
+	int ret;
+	u16 tag;
+	u32 size, code;
+
+	ret = tpm_sendrecv_command(dev, command_v2, response, &response_len);
+	if (ret)
+		return log_msg_ret("read", ret);
+
+	if (unpack_byte_string(response, response_len, "wdds",
+			0, &tag, 2, &size, 6, &code,
+			12, out_digest, TPM2_SHA256_DIGEST_SIZE)) //digest_size
+		return TPM_LIB_ERROR;
+
+	return ret;
+}
+
 u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
-			 size_t space_size, u32 nv_attributes,
-			 const u8 *nv_policy, size_t nv_policy_size)
+			size_t space_size, u32 nv_attributes,
+			const u8 *nv_policy, size_t nv_policy_size)
 {
 	/*
 	 * Calculate the offset of the nv_policy piece by adding each of the
 	 * chunks below.
 	 */
 	const int platform_len = sizeof(u32);
-	const int session_hdr_len = 13;
+	const int session_hdr_len = 15;
 	const int message_len = 14;
-	uint offset = TPM2_HDR_LEN + platform_len + session_hdr_len +
-		message_len;
+	int ret;
+	uint offset = TPM2_HDR_LEN + platform_len + session_hdr_len + message_len;
+	u8 attrs = 0;
+
 	u8 command_v2[COMMAND_BUFFER_SIZE] = {
 		/* header 10 bytes */
 		tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
@@ -806,43 +975,72 @@ u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
 		tpm_u32(TPM2_CC_NV_DEFINE_SPACE),/* Command code */
 
 		/* handles 4 bytes */
-		tpm_u32(TPM2_RH_PLATFORM),	/* Primary platform seed */
+		tpm_u32(TPM2_RH_PLATFORM),	/* platform seed, requires TPMA_NV_PLATFORMCREATE */
 
-		/* session header 13 bytes */
+
+		/* session header 15 bytes */
+		/*null auth session*/
 		tpm_u32(9),			/* Header size */
-		tpm_u32(TPM2_RS_PW),		/* Password authorisation */
+		tpm_u32(TPM2_RS_PW),		/* auth handle if active, otherwise TPM2_RS_PW*/
 		tpm_u16(0),			/* nonce_size */
-		0,				/* session_attrs */
+		attrs,				/* session_attrs */
+		tpm_u16(0),			/* HMAC size */
+		/*end auth area*/
 		tpm_u16(0),			/* auth_size */
-
 		/* message 14 bytes + policy */
 		tpm_u16(message_len + nv_policy_size),	/* size */
 		tpm_u32(space_index),
 		tpm_u16(TPM2_ALG_SHA256),
-		tpm_u32(nv_attributes),
+		tpm_u32(nv_attributes | TPMA_NV_PLATFORMCREATE),
 		tpm_u16(nv_policy_size),
 		/*
 		 * nv_policy
 		 * space_size
 		 */
 	};
-	int ret;
-
 	/*
 	 * Fill the command structure starting from the first buffer:
-	 *     - the password (if any)
+	 *	 - the password (if any)
 	 */
 	ret = pack_byte_string(command_v2, sizeof(command_v2), "sw",
-			       offset, nv_policy, nv_policy_size,
-			       offset + nv_policy_size, space_size);
+				offset, nv_policy, nv_policy_size,
+				offset + nv_policy_size, space_size);
 	if (ret)
 		return TPM_LIB_ERROR;
+	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
+}
 
+u32 tpm2_nv_undefine_space(struct udevice *dev, u32 space_index)
+{
+	const int platform_len = sizeof(u32);
+	const int session_hdr_len = 13;
+	const int message_len = 4;
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+		/* header 10 bytes */
+		tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
+		tpm_u32(TPM2_HDR_LEN + platform_len + session_hdr_len +
+			message_len),/* Length - header + provision + index + auth area*/
+		tpm_u32(TPM2_CC_NV_UNDEFINE_SPACE),/* Command code */
+
+		/* handles 4 bytes */
+		tpm_u32(TPM2_RH_PLATFORM),	/* Primary platform seed */
+		/* nv_index */
+		tpm_u32(space_index),
+
+		/*null auth session*/
+		tpm_u32(9),			/* Header size */
+		tpm_u32(TPM2_RS_PW),		/* Password authorisation*/
+		tpm_u16(0),			/* nonce_size */
+		0,				/* session_attrs */
+		tpm_u16(0),			/* HMAC size */
+		/*end auth area*/
+
+	};
 	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
 }
 
 u32 tpm2_pcr_extend(struct udevice *dev, u32 index, u32 algorithm,
-		    const u8 *digest, u32 digest_len)
+			const u8 *digest, u32 digest_len)
 {
 	/* Length of the message header, up to start of digest */
 	uint offset = 33;
@@ -865,7 +1063,7 @@ u32 tpm2_pcr_extend(struct udevice *dev, u32 index, u32 algorithm,
 
 		/* hashes */
 		tpm_u32(1),			/* Count (number of hashes) */
-		tpm_u16(algorithm),	/* Algorithm of the hash */
+		tpm_u16(algorithm),		/* Algorithm of the hash */
 		/* STRING(digest)		   Digest */
 	};
 	int ret;
@@ -874,66 +1072,111 @@ u32 tpm2_pcr_extend(struct udevice *dev, u32 index, u32 algorithm,
 		return -EINVAL;
 	/*
 	 * Fill the command structure starting from the first buffer:
-	 *     - the digest
+	 *	 - the digest
 	 */
 	ret = pack_byte_string(command_v2, sizeof(command_v2), "s",
-			       offset, digest, digest_len);
+				offset, digest, digest_len);
 	if (ret)
 		return TPM_LIB_ERROR;
 
 	return tpm_sendrecv_command(dev, command_v2, NULL, NULL);
 }
 
-u32 tpm2_nv_read_value(struct udevice *dev, u32 index, void *data, u32 count)
+u32 tpm2_nv_read_value(struct udevice *dev, u32 index, void *data, u32 count, u32 *session_handle)
 {
-	u8 command_v2[COMMAND_BUFFER_SIZE] = {
-		/* header 10 bytes */
-		tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
-		tpm_u32(10 + 8 + 4 + 9 + 4),	/* Length */
-		tpm_u32(TPM2_CC_NV_READ),	/* Command code */
-
-		/* handles 8 bytes */
-		tpm_u32(TPM2_RH_PLATFORM),	/* Primary platform seed */
-		tpm_u32(HR_NV_INDEX + index),	/* Password authorisation */
-
-		/* AUTH_SESSION */
-		tpm_u32(9),			/* Authorization size */
-		tpm_u32(TPM2_RS_PW),		/* Session handle */
-		tpm_u16(0),			/* Size of <nonce> */
-						/* <nonce> (if any) */
-		0,				/* Attributes: Cont/Excl/Rst */
-		tpm_u16(0),			/* Size of <hmac/password> */
-						/* <hmac/password> (if any) */
-
-		tpm_u16(count),			/* Number of bytes */
-		tpm_u16(0),			/* Offset */
-	};
-	size_t response_len = COMMAND_BUFFER_SIZE;
-	u8 response[COMMAND_BUFFER_SIZE];
+	static const int handles_len = 8, auth_handle_hdr_len = 10;
+	u32 offset = TPM2_HDR_LEN + handles_len + auth_handle_hdr_len;
+	struct tpm_chip_priv *priv;
 	int ret;
 	u16 tag;
 	u32 size, code;
 
+	priv = dev_get_uclass_priv(dev);
+
+	if (!priv)
+		return TPM_LIB_ERROR;
+
+	u32 nonce_size = priv->nonce_sz;
+	u32 authorization = TPM2_RS_PW;
+
+	priv->nonce[nonce_size - 1]++; //increase nonce.
+	if (session_handle)
+		authorization = *session_handle;
+	else
+		nonce_size = 0; //cannot use nonce when using password authorization
+
+	u8 command_v2[COMMAND_BUFFER_SIZE] = {
+			/* header 10 bytes */
+			tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
+			tpm_u32(offset + nonce_size + 7),	/* Length */
+			tpm_u32(TPM2_CC_NV_READ),	/* Command code */
+
+			/* handles 8 bytes */
+			tpm_u32(index),			/* Primary platform seed */
+			tpm_u32(index),			/*nv index*/
+
+			/* AUTH_SESSION */
+			tpm_u32(9 + nonce_size),	/* Authorization size */
+			/*auth handle - 9 bytes */
+			tpm_u32(authorization),
+			tpm_u16(nonce_size),		/* Size of <nonce> */
+			/* <nonce> (if any) */
+			/* Attributes: Cont/Excl/Rst */
+			/* Size of <hmac/password> */
+			/* <hmac/password> (if any) */
+			/* end auth handle */
+			/* Number of bytes */
+			/* Offset */
+	};
+
+	size_t response_len = COMMAND_BUFFER_SIZE;
+	u8 response[COMMAND_BUFFER_SIZE];
+
+	ret = pack_byte_string(command_v2, sizeof(command_v2), "sbwww",
+			offset, priv->nonce, nonce_size,
+			offset + nonce_size, 0,
+			offset + nonce_size + 1, 0,
+			offset + nonce_size + 3, count,
+			offset + nonce_size + 5, 0);
+
+	if (ret)
+		return TPM_LIB_ERROR;
+
 	ret = tpm_sendrecv_command(dev, command_v2, response, &response_len);
 	if (ret)
 		return log_msg_ret("read", ret);
+
 	if (unpack_byte_string(response, response_len, "wdds",
-			       0, &tag, 2, &size, 6, &code,
-			       16, data, count))
+			0, &tag, 2, &size, 6, &code,
+			16, data, count))
 		return TPM_LIB_ERROR;
 
 	return 0;
 }
 
 u32 tpm2_nv_write_value(struct udevice *dev, u32 index, const void *data,
-			u32 count)
+			u32 count, u32 *session_handle)
 {
+	int ret;
+	u32 authorization = TPM2_RS_PW;
 	struct tpm_chip_priv *priv = dev_get_uclass_priv(dev);
-	uint offset = 10 + 8 + 4 + 9 + 2;
-	uint len = offset + count + 2;
-	/* Use empty password auth if platform hierarchy is disabled */
-	u32 auth = priv->plat_hier_disabled ? HR_NV_INDEX + index :
-		TPM2_RH_PLATFORM;
+
+	if (!priv)
+		return TPM_LIB_ERROR;
+
+	u32 nonce_size = priv->nonce_sz;
+
+	priv->nonce[nonce_size - 1]++;
+
+	if (session_handle)
+		authorization = *session_handle;
+	else
+		nonce_size = 0; //cannot use nonce when using password authorization
+
+	static const int handles_len = 8, auth_handle_hdr_len = 10, nv_info_sz = 7;
+	u32 offset = TPM2_HDR_LEN + handles_len + auth_handle_hdr_len;
+	uint len = offset + nonce_size + count + nv_info_sz;
+
 	u8 command_v2[COMMAND_BUFFER_SIZE] = {
 		/* header 10 bytes */
 		tpm_u16(TPM2_ST_SESSIONS),	/* TAG */
@@ -941,27 +1184,34 @@ u32 tpm2_nv_write_value(struct udevice *dev, u32 index, const void *data,
 		tpm_u32(TPM2_CC_NV_WRITE),	/* Command code */
 
 		/* handles 8 bytes */
-		tpm_u32(auth),			/* Primary platform seed */
-		tpm_u32(HR_NV_INDEX + index),	/* Password authorisation */
+		tpm_u32(index),			/* Primary platform seed */
+		tpm_u32(index),			/*nv index*/
 
 		/* AUTH_SESSION */
-		tpm_u32(9),			/* Authorization size */
-		tpm_u32(TPM2_RS_PW),		/* Session handle */
-		tpm_u16(0),			/* Size of <nonce> */
-						/* <nonce> (if any) */
-		0,				/* Attributes: Cont/Excl/Rst */
-		tpm_u16(0),			/* Size of <hmac/password> */
-						/* <hmac/password> (if any) */
-
-		tpm_u16(count),
+		tpm_u32(9 + nonce_size),	/* Authorization size */
+		/*auth handle - 9 bytes */
+		tpm_u32(authorization),
+		tpm_u16(nonce_size),		/* Size of <nonce> */
+		/* <nonce> (if any) */
+		/* Attributes: Cont/Excl/Rst */
+		/* Size of <hmac/password> */
+		/* <hmac/password> (if any) */
+		/* end auth handle */
+		/* size of buffer - 2 bytes*/
+		/* data (buffer)*/
+		/* offset -> the octet offset into the NV Area*/
 	};
 	size_t response_len = COMMAND_BUFFER_SIZE;
 	u8 response[COMMAND_BUFFER_SIZE];
-	int ret;
 
-	ret = pack_byte_string(command_v2, sizeof(command_v2), "sw",
-			       offset, data, count,
-			       offset + count, 0);
+	ret = pack_byte_string(command_v2, sizeof(command_v2), "sbwwsw",
+			offset, priv->nonce, nonce_size,
+			offset + nonce_size, 0, //attrs
+			offset + nonce_size + 1, 0, //hmac sz
+			offset + nonce_size + 3, count,
+			offset + nonce_size + 5, data, count,
+			offset + nonce_size + count, 0);
+
 	if (ret)
 		return TPM_LIB_ERROR;
 
@@ -972,6 +1222,8 @@ u32 tpm2_pcr_read(struct udevice *dev, u32 idx, unsigned int idx_min_sz,
 		  u16 algorithm, void *data, u32 digest_len,
 		  unsigned int *updates)
 {
+	int ret;
+
 	u8 idx_array_sz = max(idx_min_sz, DIV_ROUND_UP(idx, 8));
 	u8 command_v2[COMMAND_BUFFER_SIZE] = {
 		tpm_u16(TPM2_ST_NO_SESSIONS),	/* TAG */
@@ -982,17 +1234,16 @@ u32 tpm2_pcr_read(struct udevice *dev, u32 idx, unsigned int idx_min_sz,
 		tpm_u32(1),			/* Number of selections */
 		tpm_u16(algorithm),		/* Algorithm of the hash */
 		idx_array_sz,			/* Array size for selection */
-		/* bitmap(idx)			   Selected PCR bitmap */
+		/* Selected PCR bitmap */
 	};
 	size_t response_len = COMMAND_BUFFER_SIZE;
 	u8 response[COMMAND_BUFFER_SIZE];
 	unsigned int pcr_sel_idx = idx / 8;
 	u8 pcr_sel_bit = BIT(idx % 8);
 	unsigned int counter = 0;
-	int ret;
 
 	if (pack_byte_string(command_v2, COMMAND_BUFFER_SIZE, "b",
-			     17 + pcr_sel_idx, pcr_sel_bit))
+				17 + pcr_sel_idx, pcr_sel_bit))
 		return TPM_LIB_ERROR;
 
 	ret = tpm_sendrecv_command(dev, command_v2, response, &response_len);
@@ -1003,9 +1254,9 @@ u32 tpm2_pcr_read(struct udevice *dev, u32 idx, unsigned int idx_min_sz,
 		return TPM_LIB_ERROR;
 
 	if (unpack_byte_string(response, response_len, "ds",
-			       10, &counter,
-			       response_len - digest_len, data,
-			       digest_len))
+				10, &counter,
+				response_len - digest_len, data,
+				digest_len))
 		return TPM_LIB_ERROR;
 
 	if (updates)
@@ -1088,7 +1339,7 @@ static bool tpm2_is_active_pcr(struct tpms_pcr_selection *selection)
 }
 
 int tpm2_get_pcr_info(struct udevice *dev, u32 *supported_pcr, u32 *active_pcr,
-		      u32 *pcr_banks)
+			u32 *pcr_banks)
 {
 	u8 response[(sizeof(struct tpms_capability_data) -
 		offsetof(struct tpms_capability_data, data))];
@@ -1111,7 +1362,7 @@ int tpm2_get_pcr_info(struct udevice *dev, u32 *supported_pcr, u32 *active_pcr,
 	 * instead of TPM2_NUM_PCR_BANKS
 	 */
 	if (pcrs.count > ARRAY_SIZE(tpm2_supported_algorithms) ||
-	    pcrs.count < 1) {
+		pcrs.count < 1) {
 		printf("%s: too many pcrs: %u\n", __func__, pcrs.count);
 		return -EMSGSIZE;
 	}
@@ -1135,10 +1386,10 @@ int tpm2_get_pcr_info(struct udevice *dev, u32 *supported_pcr, u32 *active_pcr,
 			i * ((num_pcr + 7) / 8);
 		u32 size_select_offset =
 			hash_offset + offsetof(struct tpms_pcr_selection,
-					       size_of_select);
+						size_of_select);
 		u32 pcr_select_offset =
 			hash_offset + offsetof(struct tpms_pcr_selection,
-					       pcr_select);
+						pcr_select);
 
 		pcrs.selection[i].hash =
 			get_unaligned_be16(response + hash_offset);
@@ -1146,12 +1397,12 @@ int tpm2_get_pcr_info(struct udevice *dev, u32 *supported_pcr, u32 *active_pcr,
 			__get_unaligned_be(response + size_select_offset);
 		if (pcrs.selection[i].size_of_select > TPM2_PCR_SELECT_MAX) {
 			printf("%s: pcrs selection too large: %u\n", __func__,
-			       pcrs.selection[i].size_of_select);
+				pcrs.selection[i].size_of_select);
 			return -ENOBUFS;
 		}
 		/* copy the array of pcr_select */
 		memcpy(pcrs.selection[i].pcr_select, response + pcr_select_offset,
-		       pcrs.selection[i].size_of_select);
+			pcrs.selection[i].size_of_select);
 	}
 
 	for (i = 0; i < pcrs.count; i++) {
@@ -1163,7 +1414,7 @@ int tpm2_get_pcr_info(struct udevice *dev, u32 *supported_pcr, u32 *active_pcr,
 				*active_pcr |= hash_mask;
 		} else {
 			printf("%s: unknown algorithm %x\n", __func__,
-			       pcrs.selection[i].hash);
+				pcrs.selection[i].hash);
 		}
 	}
 
@@ -1196,10 +1447,10 @@ u32 tpm2_dam_reset(struct udevice *dev, const char *pw, const ssize_t pw_sz)
 
 	/*
 	 * Fill the command structure starting from the first buffer:
-	 *     - the password (if any)
+	 *	- the password (if any)
 	 */
 	ret = pack_byte_string(command_v2, sizeof(command_v2), "s",
-			       offset, pw, pw_sz);
+				offset, pw, pw_sz);
 	offset += pw_sz;
 	if (ret)
 		return TPM_LIB_ERROR;
@@ -1511,7 +1762,7 @@ u32 tpm2_submit_command(struct udevice *dev, const u8 *sendbuf,
 }
 
 u32 tpm2_report_state(struct udevice *dev, uint vendor_cmd, uint vendor_subcmd,
-		      u8 *recvbuf, size_t *recv_size)
+			u8 *recvbuf, size_t *recv_size)
 {
 	u8 command_v2[COMMAND_BUFFER_SIZE] = {
 		/* header 10 bytes */

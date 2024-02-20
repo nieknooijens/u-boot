@@ -136,15 +136,12 @@ static int do_tpm_pcr_read(struct cmd_tbl *cmdtp, int flag, int argc,
 
 	if (argc != 3)
 		return CMD_RET_USAGE;
-
 	ret = get_tpm(&dev);
 	if (ret)
 		return ret;
-
 	priv = dev_get_uclass_priv(dev);
 	if (!priv)
 		return -EINVAL;
-
 	index = simple_strtoul(argv[1], NULL, 0);
 	if (index >= priv->pcr_count)
 		return -EINVAL;
@@ -356,6 +353,207 @@ static int do_tpm_pcr_setauthvalue(struct cmd_tbl *cmdtp, int flag,
 							key, key_sz));
 }
 
+static int do_tpm_nv_define(struct cmd_tbl *cmdtp, int flag,
+			int argc, char *const argv[])
+{
+	struct udevice *dev;
+	struct tpm_chip_priv *priv;
+	u32 nv_addr, nv_size, rc;
+	void *policy_addr = NULL;
+	size_t policy_size = 0;
+	int ret;
+
+	u32 nv_attributes = TPMA_NV_PLATFORMCREATE | TPMA_NV_OWNERWRITE |\
+			TPMA_NV_OWNERREAD | TPMA_NV_PPWRITE | TPMA_NV_PPREAD;
+
+	if (argc < 3 && argc > 7)
+		return CMD_RET_USAGE;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+
+	priv = dev_get_uclass_priv(dev);
+	if (!priv)
+		return -EINVAL;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0);
+	nv_size = simple_strtoul(argv[2], NULL, 0);
+	if (argc > 3)
+		nv_attributes = simple_strtoul(argv[3], NULL, 0);
+	if (argc > 4) {
+		policy_addr = map_sysmem(simple_strtoul(argv[4], NULL, 0), 0);
+		//POLICYREAD and POLICYWRITE are obligated when providing policy, so just force it
+		nv_attributes |= (TPMA_NV_POLICYREAD | TPMA_NV_POLICYWRITE);
+		if (argc < 5)
+			return CMD_RET_USAGE;
+		policy_size = simple_strtoul(argv[5], NULL, 0);
+	}
+
+	rc = tpm2_nv_define_space(dev, nv_addr, nv_size, nv_attributes, policy_addr, policy_size);
+	if (rc)
+		printf("ERROR: nv_define #%u returns: 0x%x\n", nv_addr, rc);
+
+	unmap_sysmem(policy_addr);
+
+	return report_return_code(rc);
+}
+
+static int do_tpm_nv_undefine(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 nv_addr, ret, rc;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+	if (argc != 2)
+		return CMD_RET_USAGE;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0);
+	rc = tpm2_nv_undefine_space(dev, nv_addr);
+
+	return report_return_code(rc);
+}
+
+static int do_tpm_nv_read_value(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 nv_addr, nv_size, rc;
+	void *session_addr = NULL;
+	int ret;
+	void *out_data;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+	if (argc < 4)
+		return CMD_RET_USAGE;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0);
+	nv_size = simple_strtoul(argv[2], NULL, 0);
+	out_data = map_sysmem(simple_strtoul(argv[3], NULL, 0), 0);
+	if (argc == 5)
+		session_addr = map_sysmem(simple_strtoul(argv[4], NULL, 0), 0);
+	//if session handle is NULL, Password authorization is used
+	rc = tpm2_nv_read_value(dev, nv_addr, out_data, nv_size, session_addr);
+
+	if (rc)
+		printf("ERROR: nv_read #%u returns: #%u\n", nv_addr, rc);
+
+	unmap_sysmem(out_data);
+	return report_return_code(rc);
+}
+
+static int do_tpm_nv_write_value(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 nv_addr, nv_size, rc;
+	void *session_addr = NULL, *data_to_write = NULL;
+	int ret;
+
+	ret = get_tpm(&dev);
+	if (ret)
+		return ret;
+	if (argc < 4)
+		return CMD_RET_USAGE;
+
+	nv_addr = simple_strtoul(argv[1], NULL, 0); //tpm_addr
+	nv_size = simple_strtoul(argv[2], NULL, 0); //size
+	data_to_write = map_sysmem(simple_strtoul(argv[3], NULL, 0), 0);
+
+	if (argc == 5)
+		session_addr = map_sysmem(simple_strtoul(argv[4], NULL, 0), 0);
+
+	rc = tpm2_nv_write_value(dev, nv_addr, data_to_write, nv_size, session_addr);
+	if (rc)
+		printf("ERROR: nv_write #%u returns: #%u\n", nv_addr, rc);
+
+	unmap_sysmem(session_addr);
+	unmap_sysmem(data_to_write);
+	return report_return_code(rc);
+}
+
+static int do_start_auth_session(struct cmd_tbl *cmdtp, int flag,
+int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 rc;
+	u8 session_type = TPM_SE_POLICY;
+	int ret;
+	void *data_to_write;
+
+	ret = get_tpm(&dev);
+	if (argc < 2)
+		return CMD_RET_USAGE;
+
+	data_to_write = map_sysmem(simple_strtoul(argv[1], NULL, 0), 0);
+	if (argc > 2)
+		session_type = simple_strtoul(argv[2], NULL, 0);
+
+	rc = tpm2_start_auth_session(dev, data_to_write, session_type);
+	if (rc)
+		printf("ERROR: start_auth_session returns: #%u\n", rc);
+
+	unmap_sysmem(data_to_write);
+	return report_return_code(rc);
+}
+
+static int do_flush_context(struct cmd_tbl *cmdtp, int flag,
+				int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 rc;
+	int ret;
+	void *data_to_read;
+
+	ret = get_tpm(&dev);
+
+	if (argc < 2)
+		return CMD_RET_USAGE;
+
+	data_to_read = map_sysmem(simple_strtoul(argv[1], NULL, 0), 0);
+	u32 session_handle = *((u32 *)data_to_read);
+
+	rc = tpm2_flush_context(dev, session_handle);
+
+	if (rc)
+		printf("ERROR: flush_context returns: #%u\n", rc);
+
+	unmap_sysmem(data_to_read);
+	return report_return_code(rc);
+}
+
+static int do_policy_pcr(struct cmd_tbl *cmdtp, int flag,
+			int argc, char *const argv[])
+{
+	struct udevice *dev;
+	u32 rc, pcr, session_handle;
+	int ret;
+	void *data_to_read, *out_digest;
+
+	ret = get_tpm(&dev);
+
+	if (argc != 4)
+		return CMD_RET_USAGE;
+
+	data_to_read = map_sysmem(simple_strtoul(argv[1], NULL, 0), 0);
+	session_handle = *((u32 *)data_to_read);
+	pcr = simple_strtoul(argv[2], NULL, 0);
+	out_digest = map_sysmem(simple_strtoul(argv[3], NULL, 0), 0);
+	rc = tpm2_set_policy_pcr(dev, session_handle, pcr, out_digest);
+
+	if (rc)
+		printf("ERROR: policy_pcr returns: #%u\n", rc);
+
+	unmap_sysmem(data_to_read);
+	unmap_sysmem(out_digest);
+	return report_return_code(rc);
+}
+
 static struct cmd_tbl tpm2_commands[] = {
 	U_BOOT_CMD_MKENT(device, 0, 1, do_tpm_device, "", ""),
 	U_BOOT_CMD_MKENT(info, 0, 1, do_tpm_info, "", ""),
@@ -375,6 +573,13 @@ static struct cmd_tbl tpm2_commands[] = {
 			 do_tpm_pcr_setauthpolicy, "", ""),
 	U_BOOT_CMD_MKENT(pcr_setauthvalue, 0, 1,
 			 do_tpm_pcr_setauthvalue, "", ""),
+	U_BOOT_CMD_MKENT(nv_define, 0, 1, do_tpm_nv_define, "", ""),
+	U_BOOT_CMD_MKENT(nv_undefine, 0, 1, do_tpm_nv_undefine, "", ""),
+	U_BOOT_CMD_MKENT(nv_read, 0, 1, do_tpm_nv_read_value, "", ""),
+	U_BOOT_CMD_MKENT(nv_write, 0, 1, do_tpm_nv_write_value, "", ""),
+	U_BOOT_CMD_MKENT(start_auth_session, 0, 1, do_start_auth_session, "", ""),
+	U_BOOT_CMD_MKENT(flush_context, 0, 1, do_flush_context, "", ""),
+	U_BOOT_CMD_MKENT(policy_pcr, 0, 1, do_policy_pcr, "", ""),
 };
 
 struct cmd_tbl *get_tpm2_commands(unsigned int *size)
@@ -453,4 +658,40 @@ U_BOOT_CMD(tpm2, CONFIG_SYS_MAXARGS, 1, do_tpm, "Issue a TPMv2.x command",
 "    <pcr>: index of the PCR\n"
 "    <key>: secret to protect the access of PCR #<pcr>\n"
 "    <password>: optional password of the PLATFORM hierarchy\n"
+"\n"
+"nv_define <tpm_addr> <size> [<attributes> <policy_digest_addr> <policy_size>]\n"
+"    Define new nv index in the TPM at <tpm_addr> with size <size>\n"
+"    <tpm_addr>: the internal address used within the TPM for the NV-index\n"
+"    <attributes>: is described in tpm-v2.h enum tpm_index_attrs. Note; Always use TPMA_NV_PLATFORMCREATE!\n"
+"                  will default to: TPMA_NV_PLATFORMCREATE|TPMA_NV_OWNERWRITE|TPMA_NV_OWNERREAD|TPMA_NV_PPWRITE|TPMA_NV_PPREAD\n"
+"    <policy_digest_addr>: address to a policy digest. (e.g. a PCR value)\n"
+"    <policy_size>: size of the digest in bytes\n"
+"nv_undefine <tpm_addr>\n"
+"	delete nv index\n"
+"nv_read <tpm_addr> <size> <data_addr> [<session_handle_addr>]\n"
+"    Read data stored in TPM nv_memory at <tpm_addr> with size <size>\n"
+"    <tpm_addr>: the internal address used within the TPM for the NV-index\n"
+"    <size>: datasize in bytes\n"
+"    <data_addr>: memory address where to store the data read from the TPM\n"
+"    <session_handle_addr>: addr where the session handle is stored\n"
+"nv_write <tpm_addr> <size> <data_addr> [<session_handle_addr>]\n"
+"    Write data to the TPM's nv_memory at <tpm_addr> with size <size>\n"
+"    <tpm_addr>: the internal address used within the TPM for the NV-index\n"
+"    <size>: datasize in bytes\n"
+"    <data_addr>: memory address of the data to be written to the TPM's NV-index\n"
+"    <session_handle_addr>: addr where the session handle is stored\n"
+"start_auth_session <session_handle_addr> [<session_type>]\n"
+"    Start an authorization session and store it's handle at <session_handle_addr>\n"
+"	 <session_handle_addr>: addr where to store the handle data (4 bytes)\n"
+"	 <session_type>: type of session: 0x00 for HMAC, 0x01 for policy, 0x03 for trial\n"
+"                    will default to 0x01 (TPM_SE_POLICY) if not provided\n"
+"                    to create a policy, use TPM_SE_TRIAL (0x03), to authenticate TPM_SE_POLICY (0x01)\n"
+"flush_context <session_handle_addr>\n"
+"    flush/terminate a session which's handle is stored at <session_handle_addr>\n"
+"	 <session_handle_addr>: addr where the session handle is stored\n"
+"policy_pcr <session_handle_addr> <pcr> <digest_addr>\n"
+"    create a policy to authorize using a PCR\n"
+"    <session_handle_addr>: addr where the session handle is stored\n"
+"    <pcr>: index of the PCR\n"
+"    <digest_addr>: addr where to store the policy digest (for nv_define/nv_read/write)\n"
 );

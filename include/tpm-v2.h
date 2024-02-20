@@ -301,7 +301,8 @@ enum tpm2_startup_types {
  */
 enum tpm2_handles {
 	TPM2_RH_OWNER		= 0x40000001,
-	TPM2_RS_PW		= 0x40000009,
+	TPM2_RH_NULL		= 0x40000007,
+	TPM2_RS_PW			= 0x40000009,
 	TPM2_RH_LOCKOUT		= 0x4000000A,
 	TPM2_RH_ENDORSEMENT	= 0x4000000B,
 	TPM2_RH_PLATFORM	= 0x4000000C,
@@ -325,24 +326,30 @@ enum tpm2_handles {
  * @TPM2_CC_PCR_SETAUTHVAL: TPM2_PCR_SetAuthValue().
  */
 enum tpm2_command_codes {
-	TPM2_CC_STARTUP		= 0x0144,
-	TPM2_CC_SELF_TEST	= 0x0143,
-	TPM2_CC_HIER_CONTROL	= 0x0121,
-	TPM2_CC_CLEAR		= 0x0126,
-	TPM2_CC_CLEARCONTROL	= 0x0127,
-	TPM2_CC_HIERCHANGEAUTH	= 0x0129,
-	TPM2_CC_NV_DEFINE_SPACE	= 0x012a,
-	TPM2_CC_PCR_SETAUTHPOL	= 0x012C,
-	TPM2_CC_NV_WRITE	= 0x0137,
-	TPM2_CC_NV_WRITELOCK	= 0x0138,
-	TPM2_CC_DAM_RESET	= 0x0139,
-	TPM2_CC_DAM_PARAMETERS	= 0x013A,
-	TPM2_CC_NV_READ         = 0x014E,
-	TPM2_CC_GET_CAPABILITY	= 0x017A,
-	TPM2_CC_GET_RANDOM      = 0x017B,
-	TPM2_CC_PCR_READ	= 0x017E,
-	TPM2_CC_PCR_EXTEND	= 0x0182,
-	TPM2_CC_PCR_SETAUTHVAL	= 0x0183,
+	TPM2_CC_STARTUP				= 0x0144,
+	TPM2_CC_SELF_TEST			= 0x0143,
+	TPM2_CC_HIER_CONTROL		= 0x0121,
+	TPM2_CC_CLEAR				= 0x0126,
+	TPM2_CC_CLEARCONTROL		= 0x0127,
+	TPM2_CC_HIERCHANGEAUTH		= 0x0129,
+	TPM2_CC_NV_DEFINE_SPACE		= 0x012a,
+	TPM2_CC_NV_UNDEFINE_SPACE	= 0x0122,
+	TPM2_CC_PCR_SETAUTHPOL		= 0x012C,
+	TPM2_CC_CREATE_PRIMARY		= 0x0131,
+	TPM2_CC_NV_WRITE			= 0x0137,
+	TPM2_CC_NV_WRITELOCK		= 0x0138,
+	TPM2_CC_DAM_RESET			= 0x0139,
+	TPM2_CC_DAM_PARAMETERS		= 0x013A,
+	TPM2_CC_NV_READ				= 0x014E,
+	TPM2_CC_FLUSH_CONTEXT		= 0x0165,
+	TPM2_CC_START_AUTH_SESSION	= 0x0176,
+	TPM2_CC_GET_CAPABILITY		= 0x017A,
+	TPM2_CC_GET_RANDOM			= 0x017B,
+	TPM2_CC_PCR_READ			= 0x017E,
+	TPM2_CC_POLICY_PCR			= 0x017F,
+	TPM2_CC_PCR_EXTEND			= 0x0182,
+	TPM2_CC_PCR_SETAUTHVAL		= 0x0183,
+	TPM2_CC_POLICY_GET_DIGEST	= 0x0189,
 };
 
 /**
@@ -384,6 +391,16 @@ enum tpm2_algorithms {
 	TPM2_ALG_SHA512		= 0x0D,
 	TPM2_ALG_NULL		= 0x10,
 	TPM2_ALG_SM3_256	= 0x12,
+	TPM2_ALG_ECC		= 0x23,
+};
+
+/**
+ * TPM2 session types.
+ */
+enum tpm2_se {
+	TPM_SE_HMAC			= 0x00,
+	TPM_SE_POLICY		= 0x01,
+	TPM_SE_TRIAL		= 0x03,
 };
 
 extern const enum tpm2_algorithms tpm2_supported_algorithms[4];
@@ -503,10 +520,10 @@ struct tcg2_event_log {
 /**
  * Create a list of digests of the supported PCR banks for a given input data
  *
- * @dev		TPM device
- * @input	Data
- * @length	Length of the data to calculate the digest
- * @digest_list	List of digests to fill in
+ * @dev:	TPM device
+ * @input:	Data
+ * @length:	Length of the data to calculate the digest
+ * @digest_list:	List of digests to fill in
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -516,7 +533,7 @@ int tcg2_create_digest(struct udevice *dev, const u8 *input, u32 length,
 /**
  * Get the event size of the specified digests
  *
- * @digest_list	List of digests for the event
+ * @digest_list:	List of digests for the event
  *
  * Return: Size in bytes of the event
  */
@@ -525,8 +542,8 @@ u32 tcg2_event_get_size(struct tpml_digest_values *digest_list);
 /**
  * tcg2_get_active_pcr_banks
  *
- * @dev			TPM device
- * @active_pcr_banks	Bitmask of PCR algorithms supported
+ * @dev:		TPM device
+ * @active_pcr_banks:	Bitmask of PCR algorithms supported
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -535,12 +552,12 @@ int tcg2_get_active_pcr_banks(struct udevice *dev, u32 *active_pcr_banks);
 /**
  * tcg2_log_append - Append an event to an event log
  *
- * @pcr_index	Index of the PCR
- * @event_type	Type of event
- * @digest_list List of digests to add
- * @size	Size of event
- * @event	Event data
- * @log		Log buffer to append the event to
+ * @pcr_index:	Index of the PCR
+ * @event_type:	Type of event
+ * @digest_list: List of digests to add
+ * @size:	Size of event
+ * @event:	Event data
+ * @log:		Log buffer to append the event to
  */
 void tcg2_log_append(u32 pcr_index, u32 event_type,
 		     struct tpml_digest_values *digest_list, u32 size,
@@ -549,9 +566,9 @@ void tcg2_log_append(u32 pcr_index, u32 event_type,
 /**
  * Extend the PCR with specified digests
  *
- * @dev		TPM device
- * @pcr_index	Index of the PCR
- * @digest_list	List of digests to extend
+ * @dev:	TPM device
+ * @pcr_index:	Index of the PCR
+ * @digest_list:	List of digests to extend
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -561,9 +578,9 @@ int tcg2_pcr_extend(struct udevice *dev, u32 pcr_index,
 /**
  * Read the PCR into a list of digests
  *
- * @dev		TPM device
- * @pcr_index	Index of the PCR
- * @digest_list	List of digests to extend
+ * @dev:	TPM device
+ * @pcr_index:	Index of the PCR
+ * @digest_list:	List of digests to extend
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -573,14 +590,14 @@ int tcg2_pcr_read(struct udevice *dev, u32 pcr_index,
 /**
  * Measure data into the TPM PCRs and the platform event log.
  *
- * @dev		TPM device
- * @log		Platform event log
- * @pcr_index	Index of the PCR
- * @size	Size of the data or 0 for event only
- * @data	Pointer to the data or NULL for event only
- * @event_type	Event log type
- * @event_size	Size of the event
- * @event	Pointer to the event
+ * @dev:	TPM device
+ * @log:	Platform event log
+ * @pcr_index:	Index of the PCR
+ * @size:	Size of the data or 0 for event only
+ * @data:	Pointer to the data or NULL for event only
+ * @event_type:	Event log type
+ * @event_size:	Size of the event
+ * @event:	Pointer to the event
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -598,13 +615,13 @@ int tcg2_measure_data(struct udevice *dev, struct tcg2_event_log *elog,
  * and the PCRs are not extended, the log is "replayed" to extend the PCRs.
  * If no log is discovered, create the log header.
  *
- * @dev			TPM device
- * @elog		Platform event log. The log pointer and log_size
+ * @dev:		TPM device
+ * @elog:		Platform event log. The log pointer and log_size
  *			members must be initialized to either 0 or to a valid
  *			memory region, in which case any existing log
  *			discovered will be copied to the specified memory
  *			region.
- * @ignore_existing_log	Boolean to indicate whether or not to ignore an
+ * @ignore_existing_log:	Boolean to indicate whether or not to ignore an
  *			existing platform log in memory
  *
  * Return: zero on success, negative errno otherwise
@@ -615,13 +632,13 @@ int tcg2_log_prepare_buffer(struct udevice *dev, struct tcg2_event_log *elog,
 /**
  * Begin measurements.
  *
- * @dev			TPM device
- * @elog		Platform event log. The log pointer and log_size
+ * @dev:		TPM device
+ * @elog:		Platform event log. The log pointer and log_size
  *			members must be initialized to either 0 or to a valid
  *			memory region, in which case any existing log
  *			discovered will be copied to the specified memory
  *			region.
- * @ignore_existing_log Boolean to indicate whether or not to ignore an
+ * @ignore_existing_log: Boolean to indicate whether or not to ignore an
  *			existing platform log in memory
  *
  * Return: zero on success, negative errno otherwise
@@ -632,9 +649,9 @@ int tcg2_measurement_init(struct udevice **dev, struct tcg2_event_log *elog,
 /**
  * Stop measurements and record separator events.
  *
- * @dev		TPM device
- * @elog	Platform event log
- * @error	Boolean to indicate whether an error ocurred or not
+ * @dev:	TPM device
+ * @elog:	Platform event log
+ * @error:	Boolean to indicate whether an error ocurred or not
  */
 void tcg2_measurement_term(struct udevice *dev, struct tcg2_event_log *elog,
 			   bool error);
@@ -642,9 +659,9 @@ void tcg2_measurement_term(struct udevice *dev, struct tcg2_event_log *elog,
 /**
  * Get the platform event log address and size.
  *
- * @dev		TPM device
- * @addr	Address of the log
- * @size	Size of the log
+ * @dev:	TPM device
+ * @addr:	Address of the log
+ * @size:	Size of the log
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -653,7 +670,7 @@ int tcg2_platform_get_log(struct udevice *dev, void **addr, u32 *size);
 /**
  * Get the first TPM2 device found.
  *
- * @dev		TPM device
+ * @dev:	TPM device
  *
  * Return: zero on success, negative errno otherwise
  */
@@ -662,16 +679,16 @@ int tcg2_platform_get_tpm2(struct udevice **dev);
 /**
  * Platform-specific function for handling TPM startup errors
  *
- * @dev		TPM device
- * @rc		The TPM response code
+ * @dev:	TPM device
+ * @rc:		The TPM response code
  */
 void tcg2_platform_startup_error(struct udevice *dev, int rc);
 
 /**
  * Issue a TPM2_Startup command.
  *
- * @dev		TPM device
- * @mode	TPM startup mode
+ * @dev:	TPM device
+ * @mode:	TPM startup mode
  *
  * Return: code of the operation
  */
@@ -680,8 +697,8 @@ u32 tpm2_startup(struct udevice *dev, enum tpm2_startup_types mode);
 /**
  * Issue a TPM2_SelfTest command.
  *
- * @dev		TPM device
- * @full_test	Asking to perform all tests or only the untested ones
+ * @dev:	TPM device
+ * @full_test:	Asking to perform all tests or only the untested ones
  *
  * Return: code of the operation
  */
@@ -690,10 +707,10 @@ u32 tpm2_self_test(struct udevice *dev, enum tpm2_yes_no full_test);
 /**
  * Issue a TPM2_Clear command.
  *
- * @dev		TPM device
- * @handle	Handle
- * @pw		Password
- * @pw_sz	Length of the password
+ * @dev:	TPM device
+ * @handle:	Handle
+ * @pw:		Password
+ * @pw_sz:	Length of the password
  *
  * Return: code of the operation
  */
@@ -701,30 +718,88 @@ u32 tpm2_clear(struct udevice *dev, u32 handle, const char *pw,
 	       const ssize_t pw_sz);
 
 /**
+ * Issue a TPM2_StartAuthSession command. (chaining commands together which need authorization)
+ *
+ * @dev:	TPM device
+ * @session_handle:	Pointer to memory where to store the session handle.
+ * @session_type:	tpm2_se value to indicate session type (usually TPM_SE_POLICY)
+ *
+ * Return: code of the operation
+ */
+u32 tpm2_start_auth_session(struct udevice *dev, u32 *session_handle, u8 session_type);
+/**
+ * Issue a TPM2_FlushContext command. (for ending the authorization session)
+ *
+ * @dev:		TPM device
+ * @session_handle:	Authorization session to be terminated.
+ *
+ * Return: code of the operation
+ */
+u32 tpm2_flush_context(struct udevice *dev, u32 session_handle);
+
+/**
+ * Issue a TPM2_PolicyPCR command. (for authenticating using a PCR value)
+ *
+ * @dev:		TPM device
+ * @session_handle:	policy session handle started with start_auth_session.
+ * @index:		Index of the PCR
+ *
+ * @note:		For now only 1 PCR selection is supported,
+ *			since the value of one PCR can be extended with the value of another.
+ *			This achieves the same effect as selecting multiple PCR's
+ * @out_digest:		addr where to write the digest
+ *
+ * Return:		code of the operation
+ */
+u32 tpm2_set_policy_pcr(struct udevice *dev, u32 session_handle, u32 index, void *out_digest);
+
+/**
+ * Issue a TPM2_getPolicyDigest command.
+ *
+ * @dev:		TPM device
+ * @session_handle:	policy session handle started with start_auth_session.
+ * @out_digest:		addr where to write the digest (size is 0x20 for SHA256)
+ * Return:		code of the operation
+ */
+u32 tpm2_get_policy_digest(struct udevice *dev, u32 session_handle, void *out_digest);
+
+/**
  * Issue a TPM_NV_DefineSpace command
  *
  * This allows a space to be defined with given attributes and policy
  *
- * @dev			TPM device
- * @space_index		index of the area
- * @space_size		size of area in bytes
- * @nv_attributes	TPM_NV_ATTRIBUTES of the area
- * @nv_policy		policy to use
- * @nv_policy_size	size of the policy
- * Return: return code of the operation
+ * @dev:		TPM device
+ * @space_index:	index of the area
+ * @space_size:		size of area in bytes
+ * @nv_attributes:	TPM_NV_ATTRIBUTES of the area
+ * @session_handle:	handle to a session. can be TPM2_RS_PW
+ * @nv_policy:		policy to use
+ * @nv_policy_size:	size of the policy
+ * Return:		return code of the operation
  */
 u32 tpm2_nv_define_space(struct udevice *dev, u32 space_index,
 			 size_t space_size, u32 nv_attributes,
 			 const u8 *nv_policy, size_t nv_policy_size);
 
 /**
+ * Issue a TPM_NV_UnDefineSpace command
+ *
+ * This allows a space to be removed. Needed because TPM_clear doesn't clear platform entries
+ *
+ * @dev:		TPM device
+ * @space_index:	index of the area
+ * Return:		return code of the operation
+ */
+u32 tpm2_nv_undefine_space(struct udevice *dev, u32 space_index);
+
+/**
  * Issue a TPM2_PCR_Extend command.
  *
- * @dev		TPM device
- * @index	Index of the PCR
- * @algorithm	Algorithm used, defined in 'enum tpm2_algorithms'
- * @digest	Value representing the event to be recorded
- * @digest_len  len of the hash
+ * @dev:	TPM device
+ * @index:	Index of the PCR
+ * @algorithm:	Algorithm used, defined in 'enum tpm2_algorithms'
+ * @digest:	Value representing the event to be recorded
+ * @digest_len:	len of the hash
  *
  * Return: code of the operation
  */
@@ -734,36 +809,38 @@ u32 tpm2_pcr_extend(struct udevice *dev, u32 index, u32 algorithm,
 /**
  * Read data from the secure storage
  *
- * @dev		TPM device
- * @index	Index of data to read
- * @data	Place to put data
- * @count	Number of bytes of data
- * Return: code of the operation
+ * @dev:		TPM device
+ * @index:		Index of data to read
+ * @data:		Place to put data
+ * @count:		Number of bytes of data
+ * @session_handle:	handle of a running authorization session. if NULL->password authorization
+ * Return:		code of the operation
  */
-u32 tpm2_nv_read_value(struct udevice *dev, u32 index, void *data, u32 count);
+u32 tpm2_nv_read_value(struct udevice *dev, u32 index, void *data, u32 count, u32 *session_handle);
 
 /**
  * Write data to the secure storage
  *
- * @dev		TPM device
- * @index	Index of data to write
- * @data	Data to write
- * @count	Number of bytes of data
- * Return: code of the operation
+ * @dev:		TPM device
+ * @index:		Index of data to write
+ * @data:		Data to write
+ * @count:		Number of bytes of data
+ * @session_handle:	handle of a running authorization session. if NULL->password authorization
+ * Return:		code of the operation
  */
 u32 tpm2_nv_write_value(struct udevice *dev, u32 index, const void *data,
-			u32 count);
+			u32 count, u32 *session_handle);
 
 /**
  * Issue a TPM2_PCR_Read command.
  *
- * @dev		TPM device
- * @idx		Index of the PCR
- * @idx_min_sz	Minimum size in bytes of the pcrSelect array
- * @algorithm	Algorithm used, defined in 'enum tpm2_algorithms'
- * @data	Output buffer for contents of the named PCR
- * @digest_len  len of the data
- * @updates	Optional out parameter: number of updates for this PCR
+ * @dev:	TPM device
+ * @idx:	Index of the PCR
+ * @idx_min_sz:	Minimum size in bytes of the pcrSelect array
+ * @algorithm:	Algorithm used, defined in 'enum tpm2_algorithms'
+ * @data:	Output buffer for contents of the named PCR
+ * @digest_len:	len of the data
+ * @updates:	Optional out parameter: number of updates for this PCR
  *
  * Return: code of the operation
  */
@@ -775,13 +852,13 @@ u32 tpm2_pcr_read(struct udevice *dev, u32 idx, unsigned int idx_min_sz,
  * Issue a TPM2_GetCapability command.  This implementation is limited
  * to query property index that is 4-byte wide.
  *
- * @dev		TPM device
- * @capability	Partition of capabilities
- * @property	Further definition of capability, limited to be 4 bytes wide
- * @buf		Output buffer for capability information
- * @prop_count	Size of output buffer
+ * @dev:	TPM device
+ * @capability:	Partition of capabilities
+ * @property:	Further definition of capability, limited to be 4 bytes wide
+ * @buf:	Output buffer for capability information
+ * @prop_count:	Size of output buffer
  *
- * Return: code of the operation
+ * Return:	code of the operation
  */
 u32 tpm2_get_capability(struct udevice *dev, u32 capability, u32 property,
 			void *buf, size_t prop_count);
@@ -802,9 +879,9 @@ int tpm2_get_pcr_info(struct udevice *dev, u32 *supported_pcr, u32 *active_pcr,
 /**
  * Issue a TPM2_DictionaryAttackLockReset command.
  *
- * @dev		TPM device
- * @pw		Password
- * @pw_sz	Length of the password
+ * @dev:	TPM device
+ * @pw:		Password
+ * @pw_sz:	Length of the password
  *
  * Return: code of the operation
  */
@@ -813,12 +890,12 @@ u32 tpm2_dam_reset(struct udevice *dev, const char *pw, const ssize_t pw_sz);
 /**
  * Issue a TPM2_DictionaryAttackParameters command.
  *
- * @dev		TPM device
- * @pw		Password
- * @pw_sz	Length of the password
- * @max_tries	Count of authorizations before lockout
- * @recovery_time Time before decrementation of the failure count
- * @lockout_recovery Time to wait after a lockout
+ * @dev:	TPM device
+ * @pw:		Password
+ * @pw_sz:	Length of the password
+ * @max_tries:	Count of authorizations before lockout
+ * @recovery_time: Time before decrementation of the failure count
+ * @lockout_recovery: Time to wait after a lockout
  *
  * Return: code of the operation
  */
@@ -830,12 +907,12 @@ u32 tpm2_dam_parameters(struct udevice *dev, const char *pw,
 /**
  * Issue a TPM2_HierarchyChangeAuth command.
  *
- * @dev		TPM device
- * @handle	Handle
- * @newpw	New password
- * @newpw_sz	Length of the new password
- * @oldpw	Old password
- * @oldpw_sz	Length of the old password
+ * @dev:	TPM device
+ * @handle:	Handle
+ * @newpw:	New password
+ * @newpw_sz:	Length of the new password
+ * @oldpw:	Old password
+ * @oldpw_sz:	Length of the old password
  *
  * Return: code of the operation
  */
@@ -846,11 +923,11 @@ int tpm2_change_auth(struct udevice *dev, u32 handle, const char *newpw,
 /**
  * Issue a TPM_PCR_SetAuthPolicy command.
  *
- * @dev		TPM device
- * @pw		Platform password
- * @pw_sz	Length of the password
- * @index	Index of the PCR
- * @digest	New key to access the PCR
+ * @dev:	TPM device
+ * @pw:		Platform password
+ * @pw_sz:	Length of the password
+ * @index:	Index of the PCR
+ * @digest:	New key to access the PCR
  *
  * Return: code of the operation
  */
@@ -860,12 +937,12 @@ u32 tpm2_pcr_setauthpolicy(struct udevice *dev, const char *pw,
 /**
  * Issue a TPM_PCR_SetAuthValue command.
  *
- * @dev		TPM device
- * @pw		Platform password
- * @pw_sz	Length of the password
- * @index	Index of the PCR
- * @digest	New key to access the PCR
- * @key_sz	Length of the new key
+ * @dev:	TPM device
+ * @pw:		Platform password
+ * @pw_sz:	Length of the password
+ * @index:	Index of the PCR
+ * @digest:	New key to access the PCR
+ * @key_sz:	Length of the new key
  *
  * Return: code of the operation
  */
@@ -876,9 +953,9 @@ u32 tpm2_pcr_setauthvalue(struct udevice *dev, const char *pw,
 /**
  * Issue a TPM2_GetRandom command.
  *
- * @dev		TPM device
- * @param data		output buffer for the random bytes
- * @param count		size of output buffer
+ * @dev:	TPM device
+ * @data:		output buffer for the random bytes
+ * @count:		size of output buffer
  *
  * Return: return code of the operation
  */
@@ -889,8 +966,8 @@ u32 tpm2_get_random(struct udevice *dev, void *data, u32 count);
  *
  * Once locked the data cannot be written until after a reboot
  *
- * @dev		TPM device
- * @index	Index of data to lock
+ * @dev:	TPM device
+ * @index:	Index of data to lock
  * Return: code of the operation
  */
 u32 tpm2_write_lock(struct udevice *dev, u32 index);
@@ -901,7 +978,7 @@ u32 tpm2_write_lock(struct udevice *dev, u32 index);
  * This can be called to close off access to the firmware data in the data,
  * before calling the kernel.
  *
- * @dev		TPM device
+ * @dev:	TPM device
  * Return: code of the operation
  */
 u32 tpm2_disable_platform_hierarchy(struct udevice *dev);
@@ -909,7 +986,7 @@ u32 tpm2_disable_platform_hierarchy(struct udevice *dev);
 /**
  * submit user specified data to the TPM and get response
  *
- * @dev		TPM device
+ * @dev:	TPM device
  * @sendbuf:	Buffer of the data to send
  * @recvbuf:	Buffer to save the response to
  * @recv_size:	Pointer to the size of the response buffer
@@ -930,7 +1007,7 @@ u32 tpm2_submit_command(struct udevice *dev, const u8 *sendbuf,
  * Return: result of the operation
  */
 u32 tpm2_report_state(struct udevice *dev, uint vendor_cmd, uint vendor_subcmd,
-		      u8 *recvbuf, size_t *recv_size);
+			u8 *recvbuf, size_t *recv_size);
 
 /**
  * tpm2_enable_nvcommits() - Tell TPM to commit NV data immediately
@@ -941,7 +1018,7 @@ u32 tpm2_report_state(struct udevice *dev, uint vendor_cmd, uint vendor_subcmd,
  * This vendor command is used to indicate that non-volatile data should be
  * written to its store immediately.
  *
- * @dev		TPM device
+ * @dev:	TPM device
  * @vendor_cmd:	Vendor command number to send
  * @vendor_subcmd: Vendor sub-command number to send
  * Return: result of the operation
@@ -951,16 +1028,16 @@ u32 tpm2_enable_nvcommits(struct udevice *dev, uint vendor_cmd,
 
 /**
  * tpm2_auto_start() - start up the TPM and perform selftests.
- *                     If a testable function has not been tested and is
- *                     requested the TPM2  will return TPM_RC_NEEDS_TEST.
+ *					If a testable function has not been tested and is
+ *					requested the TPM2  will return TPM_RC_NEEDS_TEST.
  *
- * @param dev		TPM device
+ * @dev:	TPM device
  * Return: TPM2_RC_TESTING, if TPM2 self-test is in progress.
- *         TPM2_RC_SUCCESS, if testing of all functions is complete without
- *         functional failures.
- *         TPM2_RC_FAILURE, if any test failed.
- *         TPM2_RC_INITIALIZE, if the TPM has not gone through the Startup
- *         sequence
+ *	TPM2_RC_SUCCESS, if testing of all functions is complete without
+ *	functional failures.
+ *	TPM2_RC_FAILURE, if any test failed.
+ *	TPM2_RC_INITIALIZE, if the TPM has not gone through the Startup
+ *	sequence
 
  */
 u32 tpm2_auto_start(struct udevice *dev);

@@ -69,6 +69,8 @@ struct tpm_chip_priv {
 	uint pcr_count;
 	uint pcr_select_min;
 	bool plat_hier_disabled;
+	u16 nonce_sz;
+	u8 nonce[32]; //NONCE_TPM_SIZE;
 };
 
 /**
